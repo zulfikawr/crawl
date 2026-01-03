@@ -1,0 +1,91 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+
+# Go workspace file
+go.work
+go.work.sum
+
+# Dependency directories
+vendor/
+
+# Compiled binary
+/crawl
+/crawl-*
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Configuration files (keep examples)
+crawl.yaml
+config.yaml
+*.local.yaml
+
+# Output directories
+downloads/
+output/
+data/
+
+# Log files
+*.log
+logs/
+
+# Cache directories
+.cache/
+cache/
+
+# Test coverage
+coverage.txt
+coverage.html
+coverage.out
+
+# Build artifacts
+dist/
+build/
+bin/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# OS specific
+Thumbs.db
+.Spotlight-V100
+.Trashes
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Debug files
+debug
+debug.test
+__debug_bin*
+
+# Profiling
+*.prof
+*.pprof
+cpu.prof
+mem.prof
+
+# Generated files
+*.gen.go
+
+# Chrome/Chromium user data (for testing)
+chrome-data/
