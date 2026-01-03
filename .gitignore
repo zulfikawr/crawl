@@ -37,7 +37,7 @@ config.yaml
 
 # Output directories
 downloads/
-output/
+/output
 data/
 
 # Log files
@@ -46,7 +46,7 @@ logs/
 
 # Cache directories
 .cache/
-cache/
+/cache
 
 # Test coverage
 coverage.txt
