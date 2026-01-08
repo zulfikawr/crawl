@@ -1,5 +1,9 @@
 package ui
 
+import (
+	"fmt"
+)
+
 // ANSI color and style constants for CLI output
 const (
 	ColorReset = "\033[0m"
@@ -11,11 +15,18 @@ const (
 	ColorYellow = "\033[33m"
 	ColorWhite  = "\033[97m"
 	ColorRed    = "\033[31m"
+	ColorBlue   = "\033[34m"
 )
 
-// Convenience helper to build styled strings. Keep minimal so tests can use constants directly.
+// Icons - Removed as per request
+
+// Convenience helper to build styled strings.
 func Bold(s string) string {
 	return ColorBold + s + ColorReset
+}
+
+func Dim(s string) string {
+	return ColorDim + s + ColorReset
 }
 
 func Success(s string) string {
@@ -23,9 +34,43 @@ func Success(s string) string {
 }
 
 func Info(s string) string {
-	return ColorDim + ColorYellow + s + ColorReset
+	return ColorDim + s + ColorReset
+}
+
+func Warn(s string) string {
+	return ColorYellow + s + ColorReset
 }
 
 func Error(s string) string {
 	return ColorRed + s + ColorReset
+}
+
+func Hint(s string) string {
+	return ColorYellow + s + ColorReset
+}
+
+// Styled components
+func StyledError(msg string) string {
+	return Error(msg)
+}
+
+func StyledSuccess(msg string) string {
+	return Success(msg)
+}
+
+func StyledInfo(msg string) string {
+	return Info(msg)
+}
+
+func StyledHint(msg string) string {
+	return fmt.Sprintf("%s %s", Hint("Hint:"), Dim(msg))
+}
+
+func StyledWarn(msg string) string {
+	return Warn(msg)
+}
+
+// Heading prints a stylized heading
+func Heading(s string) string {
+	return ColorCyan + s + ColorReset
 }

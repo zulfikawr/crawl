@@ -12,6 +12,7 @@ import (
 
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
+	"github.com/zulfikawr/crawl/internal/config"
 	"github.com/zulfikawr/crawl/internal/engine"
 	"github.com/zulfikawr/crawl/internal/ui"
 	headersutil "github.com/zulfikawr/crawl/internal/utils/headers"
@@ -72,12 +73,8 @@ func runGet(cmd *cobra.Command, args []string) error {
 
 	// Validate URL
 	if err := urlutil.ValidateURL(url); err != nil {
-		return err
-	}
-
-	// Warn if using default broad selector
-	if selector == "body" {
-		log.Warn().Msg("Using default 'body' selector extracts entire page. Use --selector for specific content.")
+		cmd.SilenceUsage = false // Show usage for validation errors
+		return ui.NewHintedError(err, "Please provide a valid URL including scheme (e.g., https://google.com)")
 	}
 
 	// Parse mode
@@ -91,6 +88,12 @@ func runGet(cmd *cobra.Command, args []string) error {
 		scraperMode = models.ModeSPA
 	default:
 		return fmt.Errorf("invalid mode: %s (must be auto, static, or spa)", mode)
+	}
+
+	// Warn if using default broad selector (now using styled warn)
+	if selector == "body" {
+		fmt.Println(ui.StyledWarn("Using default 'body' selector extracts entire page. Use --selector for specific content."))
+		fmt.Println()
 	}
 
 	// Parse custom headers
@@ -151,7 +154,6 @@ func runGet(cmd *cobra.Command, args []string) error {
 	case models.ModeStatic:
 		if appCtx.StaticScraper != nil {
 			scraper = appCtx.StaticScraper
-			log.Debug().Msg("Using StaticScraper")
 		}
 	case models.ModeSPA:
 		// Ensure browser pool exists before using the dynamic scraper
@@ -162,23 +164,35 @@ func runGet(cmd *cobra.Command, args []string) error {
 		ctx, cancel := context.WithTimeout(context.Background(), appCtx.Config.HTTPTimeout*2)
 		defer cancel()
 		if appCtx.BrowserPool == nil {
+			// Optimization: For single URL fetches, we only need 1 browser context.
+			// If the user hasn't overridden the default pool size, reduce it to 1.
+			if appCtx.Config.BrowserPoolSize == config.DefaultBrowserPoolSize {
+				log.Debug().Msg("Optimizing browser pool size to 1 for single request")
+				appCtx.Config.BrowserPoolSize = 1
+			}
+
 			if err := appCtx.EnsureBrowserPool(ctx); err != nil {
-				// If pool init fails, warn and continue - dynamic scraper can still
-				// operate without a pooled browser (per-request chromedp alloc).
-				log.Warn().Err(err).Msg("Failed to initialize browser pool; proceeding with per-request dynamic initialization")
-				log.Info().Msg("Hint: Check if Chrome/Chromium is installed. Set CHROME_PATH environment variable if needed.")
+				// We don't return error here yet, but we'll get it during Fetch
+				// We use StyledWarn instead of log.Warn for better visibility
+				fmt.Println(ui.StyledWarn("Could not initialize browser pool. Dynamic scraping may fail."))
+				fmt.Println(ui.StyledHint("Check if Chrome/Chromium is installed or set CHROME_PATH."))
 			}
 		}
 		scraper = appCtx.DynamicScraper
-		log.Debug().Msg("Using DynamicScraper (headless Chrome)")
-	default:
-		// ModeAuto - hybrid behavior (default)
-		log.Debug().Msg("Using HybridScraper (auto)")
 	}
-	// Fetch data
-	log.Debug().Str("url", url).Str("mode", string(scraperMode)).Msg("Fetching URL")
+
+	// Fetch data with spinner
+	spinner := ui.NewSpinner(fmt.Sprintf("Fetching %s...", url))
+	spinner.Start()
+
 	pageData, err := scraper.Fetch(opts)
+
+	spinner.Stop()
+
 	if err != nil {
+		if strings.Contains(err.Error(), "executable file not found") {
+			return ui.NewHintedError(err, "Google Chrome is required for SPA mode. Install Chrome or use --mode=static for faster, static-only scraping.")
+		}
 		return fmt.Errorf("failed to fetch URL: %w", err)
 	}
 
@@ -232,50 +246,8 @@ func saveOutput(data *models.PageData, pathStr string) error {
 
 	// Make clickable link when possible using OSC 8 terminal hyperlink
 	link := terminalHyperlink(filepath.Base(pathStr), pathStr)
-	fmt.Printf("%s %s\n", ui.Success("✓ Saved to"), ui.ColorBold+link+ui.ColorReset)
-	fmt.Printf("\n")
-	log.Info().Str("file", pathStr).Msg("Output saved")
+	fmt.Println(ui.StyledSuccess("Saved to " + link))
 	return nil
-}
-
-// printMetadataSummary prints key metadata fields from PageData using colors and aligns columns
-func printMetadataSummary(data *models.PageData) {
-	labelStyled := func(s string) string { return ui.ColorBold + s + ui.ColorReset }
-	valStyled := func(s string) string { return ui.ColorWhite + s + ui.ColorReset }
-
-	// 1. Define the rows structure and populate data
-	// We do this first so we can iterate over it to find the max width
-	rows := []struct {
-		Label string
-		Value string
-	}{
-		{"URL", data.URL},
-		{"Status", fmt.Sprintf("%d", data.StatusCode)},
-		{"Title", data.Title},
-		{"Response Time", fmt.Sprintf("%dms", data.ResponseTime)},
-		{"Links", fmt.Sprintf("%d", len(data.Links))},
-		{"Images", fmt.Sprintf("%d", len(data.Images))},
-		{"Scripts", fmt.Sprintf("%d", len(data.Scripts))},
-	}
-
-	// 2. Calculate the maximum label width dynamically
-	var maxLen int
-	for _, r := range rows {
-		if len(r.Label) > maxLen {
-			maxLen = len(r.Label)
-		}
-	}
-
-	// 3. Print with alignment
-	fmt.Printf("\n")
-	for _, r := range rows {
-		// Calculate padding needed to reach maxLen
-		pad := strings.Repeat(" ", maxLen-len(r.Label))
-
-		// Print: Label + Padding + " : " + Value
-		fmt.Printf("%s%s : %s\n", labelStyled(r.Label), pad, valStyled(r.Value))
-	}
-	fmt.Printf("\n")
 }
 
 // terminalHyperlink returns an OSC 8 hyperlink if supported, falling back to plain path
@@ -287,6 +259,39 @@ func terminalHyperlink(label, target string) string {
 	// OSC 8 hyperlink: ESC ] 8 ;; url BEL label ESC ] 8 ;; BEL
 	// Use file:// scheme for local files
 	return fmt.Sprintf("\x1b]8;;file://%s\x1b\\%s\x1b]8;;\x1b\\", abs, label)
+}
+
+// printMetadataSummary prints key metadata fields from PageData using colors and aligns columns
+func printMetadataSummary(data *models.PageData) {
+	fmt.Println(ui.Heading("Page Metadata"))
+
+	labelStyled := func(s string) string { return ui.ColorBold + s + ui.ColorReset }
+	valStyled := func(s string) string { return s }
+
+	rows := []struct {
+		Label string
+		Value string
+	}{
+		{"Url", data.URL},
+		{"Status", fmt.Sprintf("%d", data.StatusCode)},
+		{"Title", data.Title},
+		{"Time", fmt.Sprintf("%dms", data.ResponseTime)},
+		{"Links", fmt.Sprintf("%d", len(data.Links))},
+		{"Images", fmt.Sprintf("%d", len(data.Images))},
+		{"Scripts", fmt.Sprintf("%d", len(data.Scripts))},
+	}
+
+	var maxLen int
+	for _, r := range rows {
+		if len(r.Label) > maxLen {
+			maxLen = len(r.Label)
+		}
+	}
+
+	for _, r := range rows {
+		pad := strings.Repeat(" ", maxLen-len(r.Label))
+		fmt.Printf("  %s%s : %s\n", labelStyled(r.Label), pad, valStyled(r.Value))
+	}
 }
 
 func printOutput(data *models.PageData) error {
@@ -303,6 +308,7 @@ func printOutput(data *models.PageData) error {
 
 	// If selector was used, print just the content
 	if selector != "" && selector != "body" {
+		fmt.Println(ui.Heading("Extracted Content"))
 		fmt.Println(data.Content)
 		return nil
 	}
@@ -310,16 +316,19 @@ func printOutput(data *models.PageData) error {
 	// Otherwise, print a summary with colors
 	printMetadataSummary(data)
 
-	// Print content preview (first 500 chars) with subtle formatting
+	// Print content preview
 	contentPreview := data.Content
 	if len(contentPreview) > 500 {
 		contentPreview = contentPreview[:500] + "..."
 	}
-	fmt.Printf("%s\n%s\n\n", ui.ColorBold+"Content Preview:", ui.ColorWhite+contentPreview+ui.ColorReset)
+
+	fmt.Println()
+	fmt.Println(ui.Heading("Content Preview"))
+	fmt.Printf("  %s\n", contentPreview)
 
 	// Helpful hint for saving to a file
-	fmt.Printf("%s\n", ui.Info("Use --output=<file> to save to a specific format (available: .json, .txt, .html, .csv, .md)"))
-	fmt.Printf("\n")
+	fmt.Println()
+	fmt.Println(ui.StyledHint("Use --output=<file> to save to .json, .txt, .html, .csv, or .md"))
 
 	return nil
 }

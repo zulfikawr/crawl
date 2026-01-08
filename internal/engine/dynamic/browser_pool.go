@@ -120,23 +120,61 @@ func NewBrowserPool(opts BrowserPoolOptions) (*BrowserPool, error) {
 		closed:      false,
 	}
 
-	// Pre-create browser contexts
+	// Pre-create browser contexts concurrently
+	var wg sync.WaitGroup
+	var errMu sync.Mutex
+	var firstErr error
+
 	for i := 0; i < opts.Size; i++ {
-		browserCtx, browserCancel := chromedp.NewContext(allocCtx)
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
 
-		// Warm up the context by loading a blank page
-		if err := chromedp.Run(browserCtx, chromedp.Navigate("about:blank")); err != nil {
-			browserCancel()
-			pool.Close()
-			return nil, fmt.Errorf("failed to warm up browser context %d: %w", i, err)
-		}
+			browserCtx, browserCancel := chromedp.NewContext(allocCtx)
 
-		pool.contexts <- &BrowserContext{
-			Ctx:    browserCtx,
-			Cancel: browserCancel,
-		}
+			// Warm up the context by loading a blank page
+			// Use a goroutine to handle timeout without using a child context that might close the target
+			done := make(chan error, 1)
+			go func() {
+				done <- chromedp.Run(browserCtx, chromedp.Navigate("about:blank"))
+			}()
 
-		log.Debug().Int("context_id", i).Msg("Browser context initialized")
+			select {
+			case err := <-done:
+				if err != nil {
+					browserCancel()
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = fmt.Errorf("failed to warm up browser context %d: %w", id, err)
+					}
+					errMu.Unlock()
+					return
+				}
+			case <-time.After(10 * time.Second):
+				browserCancel()
+				errMu.Lock()
+				if firstErr == nil {
+					firstErr = fmt.Errorf("timeout warming up browser context %d", id)
+				}
+				errMu.Unlock()
+				return
+			}
+
+			// Add to pool - safe because channel is buffered to opts.Size
+			pool.contexts <- &BrowserContext{
+				Ctx:    browserCtx,
+				Cancel: browserCancel,
+			}
+
+			log.Debug().Int("context_id", id).Msg("Browser context initialized")
+		}(i)
+	}
+
+	wg.Wait()
+
+	if firstErr != nil {
+		pool.Close()
+		return nil, firstErr
 	}
 
 	log.Info().Int("pool_size", opts.Size).Msg("Browser pool ready")
@@ -200,36 +238,54 @@ func (bp *BrowserPool) Release(ctx *BrowserContext) {
 	}
 	bp.mu.Unlock()
 
-	// Clean up the context with timeout and proper error handling
-	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cleanupCancel()
+	// Perform cleanup asynchronously to allow the caller to proceed immediately
+	go func() {
+		// Clean up the context with timeout and proper error handling
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cleanupCancel()
 
-	// Navigate to about:blank to clear state
-	err := chromedp.Run(ctx.Ctx,
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			select {
-			case <-cleanupCtx.Done():
-				return cleanupCtx.Err()
-			default:
-				return chromedp.Navigate("about:blank").Do(ctx)
+		// Navigate to about:blank to clear state
+		// We use the context's own allocator but a fresh timeout
+		err := chromedp.Run(ctx.Ctx,
+			chromedp.ActionFunc(func(c context.Context) error {
+				select {
+				case <-cleanupCtx.Done():
+					return cleanupCtx.Err()
+				default:
+					return chromedp.Navigate("about:blank").Do(c)
+				}
+			}),
+		)
+
+		if err != nil {
+			// If context was canceled (likely due to shutdown), silence the warning
+			if err == context.Canceled || err.Error() == "context canceled" {
+				ctx.Cancel()
+				return
 			}
-		}),
-	)
-	if err != nil {
-		log.Warn().Err(err).Msg("Failed to cleanup browser context, will cancel and discard")
-		ctx.Cancel()
-		return // Don't return to pool
-	}
+			log.Warn().Err(err).Msg("Failed to cleanup browser context, will cancel and discard")
+			ctx.Cancel()
+			return // Don't return to pool
+		}
 
-	// Return to pool
-	select {
-	case bp.contexts <- ctx:
-		log.Debug().Msg("Browser context released to pool")
-	default:
-		// Pool is full (shouldn't happen), cancel the context
-		ctx.Cancel()
-		log.Warn().Msg("Browser pool full, discarding context")
-	}
+		// Return to pool safely
+		bp.mu.Lock()
+		defer bp.mu.Unlock()
+
+		if bp.closed {
+			ctx.Cancel()
+			return
+		}
+
+		select {
+		case bp.contexts <- ctx:
+			log.Debug().Msg("Browser context released to pool")
+		default:
+			// Pool is full (shouldn't happen), cancel the context
+			ctx.Cancel()
+			log.Warn().Msg("Browser pool full, discarding context")
+		}
+	}()
 }
 
 // Close shuts down all browser contexts and the allocator

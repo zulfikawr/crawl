@@ -54,7 +54,7 @@ func (wp *WorkerPool) DownloadBatch(ctx context.Context, urls []string, opts Dow
 		progressbar.OptionEnableColorCodes(true),
 		progressbar.OptionSetTheme(progressbar.Theme{
 			Saucer:        "[green]=[reset]",
-			SaucerHead:    "[green]>[reset]",
+			SaucerHead:    "[green]=[reset]",
 			SaucerPadding: " ",
 			BarStart:      "[",
 			BarEnd:        "]",

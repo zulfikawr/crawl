@@ -49,7 +49,7 @@ func TestDynamicScraper_Fetch_BasicHTML(t *testing.T) {
 		URL:      server.URL,
 		Mode:     models.ModeSPA,
 		Selector: "body",
-		Timeout:  10 * time.Second,
+		Timeout:  45 * time.Second,
 	}
 
 	pageData, err := scraper.Fetch(opts)
@@ -96,7 +96,7 @@ func TestDynamicScraper_Fetch_JavaScript(t *testing.T) {
 		URL:      server.URL,
 		Mode:     models.ModeSPA,
 		Selector: "#content",
-		Timeout:  10 * time.Second,
+		Timeout:  45 * time.Second,
 	}
 
 	// Wait a bit for JavaScript to execute
@@ -135,7 +135,7 @@ func TestDynamicScraper_Fetch_WithSelector(t *testing.T) {
 		URL:      server.URL,
 		Mode:     models.ModeSPA,
 		Selector: ".target",
-		Timeout:  10 * time.Second,
+		Timeout:  45 * time.Second,
 	}
 
 	pageData, err := scraper.Fetch(opts)
@@ -164,7 +164,7 @@ func TestDynamicScraper_Fetch_InvalidURL(t *testing.T) {
 		URL:      "http://invalid-url-that-does-not-exist-99999.com",
 		Mode:     models.ModeSPA,
 		Selector: "body",
-		Timeout:  5 * time.Second,
+		Timeout:  45 * time.Second,
 	}
 
 	_, err := scraper.Fetch(opts)

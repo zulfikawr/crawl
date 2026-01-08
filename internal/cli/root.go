@@ -38,9 +38,19 @@ var rootCmd = &cobra.Command{
 // This is called by main.main(). It only needs to happen once to the rootCmd.
 // It initializes the application and passes it to all commands.
 func Execute() {
+	// Silence usage on error by default, we'll only show it for actual usage errors
+	rootCmd.SilenceUsage = true
+	rootCmd.SilenceErrors = true
+
 	// Execute CLI (application is initialized lazily in PersistentPreRunE)
 	err := rootCmd.Execute()
 	if err != nil {
+		ui.PrintError(err)
+
+		if strings.Contains(err.Error(), "arg(s)") || strings.Contains(err.Error(), "flag") || strings.Contains(err.Error(), "command") {
+			_ = rootCmd.Usage()
+		}
+
 		os.Exit(1)
 	}
 }
@@ -163,7 +173,7 @@ func init() {
 // customHelpFunc provides a colorized help output
 func customHelpFunc(cmd *cobra.Command, args []string) {
 	// Header with command name
-	fmt.Fprintf(os.Stdout, "\n%s%s%s\n", ui.ColorBold+ui.ColorCyan, (cmd.Name()), ui.ColorReset)
+	fmt.Fprintf(os.Stdout, "%s%s%s\n", ui.ColorCyan, (cmd.Name()), ui.ColorReset)
 
 	// Short description
 	if cmd.Short != "" {
@@ -176,20 +186,20 @@ func customHelpFunc(cmd *cobra.Command, args []string) {
 	}
 
 	// Usage section
-	fmt.Fprintf(os.Stdout, "\n%sUsage%s\n", ui.ColorBold+ui.ColorWhite, ui.ColorReset)
+	fmt.Fprintf(os.Stdout, "\n%sUsage%s\n", ui.ColorCyan, ui.ColorReset)
 	if cmd.Runnable() {
-		fmt.Fprintf(os.Stdout, "  %s%s%s\n", ui.ColorCyan, cmd.UseLine(), ui.ColorReset)
+		fmt.Fprintf(os.Stdout, "  %s%s%s\n", ui.ColorYellow, cmd.UseLine(), ui.ColorReset)
 	}
 	if cmd.HasAvailableSubCommands() {
 		fmt.Fprintf(os.Stdout, "  %s%s%s %s<command>%s %s[flags]%s\n",
-			ui.ColorCyan, cmd.CommandPath(), ui.ColorReset,
+			ui.ColorYellow, cmd.CommandPath(), ui.ColorReset,
 			ui.ColorYellow, ui.ColorReset,
 			ui.ColorDim, ui.ColorReset)
 	}
 
 	// Examples section
 	if cmd.HasExample() {
-		fmt.Fprintf(os.Stdout, "\n%sExamples%s\n", ui.ColorBold+ui.ColorWhite, ui.ColorReset)
+		fmt.Fprintf(os.Stdout, "\n%sExamples%s\n", ui.ColorCyan, ui.ColorReset)
 		examples := strings.Split(cmd.Example, "\n")
 		lastWasCommand := false
 		for _, example := range examples {
@@ -207,14 +217,14 @@ func customHelpFunc(cmd *cobra.Command, args []string) {
 				lastWasCommand = false
 			} else {
 				// Command line
-				fmt.Fprintf(os.Stdout, "  %s$ %s%s\n", ui.ColorGreen, trimmed, ui.ColorReset)
+				fmt.Fprintf(os.Stdout, "  %s$ %s%s\n", ui.ColorYellow, trimmed, ui.ColorReset)
 			}
 		}
 	}
 
 	// Available commands section
 	if cmd.HasAvailableSubCommands() {
-		fmt.Fprintf(os.Stdout, "\n%sCommands%s\n", ui.ColorBold+ui.ColorWhite, ui.ColorReset)
+		fmt.Fprintf(os.Stdout, "\n%sCommands%s\n", ui.ColorCyan, ui.ColorReset)
 
 		maxLen := 0
 		availableCommands := []*cobra.Command{}
@@ -230,7 +240,7 @@ func customHelpFunc(cmd *cobra.Command, args []string) {
 		for _, c := range availableCommands {
 			padding := strings.Repeat(" ", maxLen-len(c.Name())+2)
 			fmt.Fprintf(os.Stdout, "  %s%s%s%s%s%s%s\n",
-				ui.ColorCyan, c.Name(), ui.ColorReset,
+				ui.ColorYellow, c.Name(), ui.ColorReset,
 				padding,
 				ui.ColorDim, c.Short, ui.ColorReset)
 		}
@@ -241,22 +251,22 @@ func customHelpFunc(cmd *cobra.Command, args []string) {
 	hasInheritedFlags := cmd.HasAvailableInheritedFlags()
 
 	if hasLocalFlags {
-		fmt.Fprintf(os.Stdout, "\n%sFlags%s\n", ui.ColorBold+ui.ColorWhite, ui.ColorReset)
+		fmt.Fprintf(os.Stdout, "\n%sFlags%s\n", ui.ColorCyan, ui.ColorReset)
 		printFlags(cmd.LocalFlags().FlagUsages())
 	}
 
 	if hasInheritedFlags {
-		fmt.Fprintf(os.Stdout, "\n%sGlobal Flags%s\n", ui.ColorBold+ui.ColorWhite, ui.ColorReset)
+		fmt.Fprintf(os.Stdout, "\n%sGlobal Flags%s\n", ui.ColorCyan, ui.ColorReset)
 		printFlags(cmd.InheritedFlags().FlagUsages())
 	}
 
 	// Footer
 	if cmd.HasAvailableSubCommands() {
-		fmt.Fprintf(os.Stdout, "\n%sUse \"%s%s%s %s<command>%s %s--help%s\" for more information about a command.%s\n",
+		fmt.Fprintf(os.Stdout, "\n%sUse \"%s%s%s %s<command>%s %s--help%s\" for more information about a command.%s",
 			ui.ColorDim,
-			ui.ColorCyan, cmd.CommandPath(), ui.ColorReset+ui.ColorDim,
+			ui.ColorYellow, cmd.CommandPath(), ui.ColorReset+ui.ColorDim,
 			ui.ColorYellow, ui.ColorReset+ui.ColorDim,
-			ui.ColorGreen, ui.ColorReset+ui.ColorDim,
+			ui.ColorYellow, ui.ColorReset+ui.ColorDim,
 			ui.ColorReset)
 	}
 	fmt.Fprintln(os.Stdout)
@@ -264,19 +274,19 @@ func customHelpFunc(cmd *cobra.Command, args []string) {
 
 // customUsageFunc provides a colorized usage output
 func customUsageFunc(cmd *cobra.Command) error {
-	fmt.Fprintf(os.Stderr, "\n%sUsage%s\n", ui.ColorBold+ui.ColorWhite, ui.ColorReset)
+	fmt.Fprintf(os.Stderr, "%sUsage%s\n", ui.ColorCyan, ui.ColorReset)
 	if cmd.Runnable() {
-		fmt.Fprintf(os.Stderr, "  %s%s%s\n", ui.ColorCyan, cmd.UseLine(), ui.ColorReset)
+		fmt.Fprintf(os.Stderr, "  %s%s%s\n", ui.ColorYellow, cmd.UseLine(), ui.ColorReset)
 	}
 	if cmd.HasAvailableSubCommands() {
 		fmt.Fprintf(os.Stderr, "  %s%s%s %s<command>%s %s[flags]%s\n",
-			ui.ColorCyan, cmd.CommandPath(), ui.ColorReset,
+			ui.ColorYellow, cmd.CommandPath(), ui.ColorReset,
 			ui.ColorYellow, ui.ColorReset,
 			ui.ColorDim, ui.ColorReset)
 	}
 
 	if cmd.HasAvailableSubCommands() {
-		fmt.Fprintf(os.Stderr, "\n%sCommands%s\n", ui.ColorBold+ui.ColorWhite, ui.ColorReset)
+		fmt.Fprintf(os.Stderr, "\n%sCommands%s\n", ui.ColorCyan, ui.ColorReset)
 
 		maxLen := 0
 		availableCommands := []*cobra.Command{}
@@ -292,21 +302,21 @@ func customUsageFunc(cmd *cobra.Command) error {
 		for _, c := range availableCommands {
 			padding := strings.Repeat(" ", maxLen-len(c.Name())+2)
 			fmt.Fprintf(os.Stderr, "  %s%s%s%s%s%s%s\n",
-				ui.ColorCyan, c.Name(), ui.ColorReset,
+				ui.ColorYellow, c.Name(), ui.ColorReset,
 				padding,
 				ui.ColorDim, c.Short, ui.ColorReset)
 		}
 	}
 
 	if cmd.HasAvailableLocalFlags() {
-		fmt.Fprintf(os.Stderr, "\n%sFlags%s\n", ui.ColorBold+ui.ColorWhite, ui.ColorReset)
+		fmt.Fprintf(os.Stderr, "\n%sFlags%s\n", ui.ColorCyan, ui.ColorReset)
 		printFlagsToStderr(cmd.LocalFlags().FlagUsages())
 	}
 
 	fmt.Fprintf(os.Stderr, "\n%sUse \"%s%s%s %s--help%s\" for more information.%s\n",
 		ui.ColorDim,
-		ui.ColorCyan, cmd.CommandPath(), ui.ColorReset+ui.ColorDim,
-		ui.ColorGreen, ui.ColorReset+ui.ColorDim,
+		ui.ColorYellow, cmd.CommandPath(), ui.ColorReset+ui.ColorDim,
+		ui.ColorYellow, ui.ColorReset+ui.ColorDim,
 		ui.ColorReset)
 
 	return nil
@@ -363,11 +373,11 @@ func printFlagsTo(writer *os.File, flagUsages string) {
 				padding := strings.Repeat(" ", maxFlagLen-len(flagPart)+2)
 
 				fmt.Fprintf(writer, "  %s%s%s%s%s%s%s\n",
-					ui.ColorGreen, flagPart, ui.ColorReset,
+					ui.ColorYellow, flagPart, ui.ColorReset,
 					padding,
 					ui.ColorDim, descPart, ui.ColorReset)
 			} else {
-				fmt.Fprintf(writer, "  %s%s%s\n", ui.ColorGreen, trimmed, ui.ColorReset)
+				fmt.Fprintf(writer, "  %s%s%s\n", ui.ColorYellow, trimmed, ui.ColorReset)
 			}
 		} else {
 			// Continuation line (description continues)

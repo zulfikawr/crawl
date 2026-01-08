@@ -9,12 +9,12 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 	"github.com/zulfikawr/crawl/internal/downloader"
 	"github.com/zulfikawr/crawl/internal/engine"
 	"github.com/zulfikawr/crawl/internal/ui"
 	headersutil "github.com/zulfikawr/crawl/internal/utils/headers"
+	urlutil "github.com/zulfikawr/crawl/internal/utils/url"
 	"github.com/zulfikawr/crawl/pkg/models"
 )
 
@@ -69,8 +69,9 @@ func runMedia(cmd *cobra.Command, args []string) error {
 	pageURL := args[0]
 
 	// Validate URL
-	if !strings.HasPrefix(pageURL, "http://") && !strings.HasPrefix(pageURL, "https://") {
-		return fmt.Errorf("invalid URL: must start with http:// or https://")
+	if err := urlutil.ValidateURL(pageURL); err != nil {
+		cmd.SilenceUsage = false
+		return ui.NewHintedError(err, "Please provide a valid URL including scheme (e.g., https://google.com)")
 	}
 
 	// Validate media type
@@ -95,13 +96,6 @@ func runMedia(cmd *cobra.Command, args []string) error {
 	if concurrency > 50 {
 		concurrency = 50
 	}
-
-	log.Debug().
-		Str("url", pageURL).
-		Str("type", string(mediaTypeEnum)).
-		Int("concurrency", concurrency).
-		Str("output", outputDir).
-		Msg("Starting media extraction")
 
 	// Parse mode
 	scraperMode := models.ModeAuto
@@ -129,7 +123,21 @@ func runMedia(cmd *cobra.Command, args []string) error {
 	// Use the scraper from the app
 	scraper = appCtx.Scraper
 
-	// Fetch the page
+	if scraperMode == models.ModeSPA {
+		ctx, cancel := context.WithTimeout(context.Background(), appCtx.Config.HTTPTimeout*2)
+		defer cancel()
+		if appCtx.BrowserPool == nil {
+			if err := appCtx.EnsureBrowserPool(ctx); err != nil {
+				fmt.Println(ui.StyledWarn("Could not initialize browser pool. Dynamic scraping may fail."))
+				fmt.Println(ui.StyledHint("Check if Chrome/Chromium is installed or set CHROME_PATH."))
+			}
+		}
+	}
+
+	// Fetch the page with spinner
+	spinner := ui.NewSpinner(fmt.Sprintf("Fetching %s...", pageURL))
+	spinner.Start()
+
 	opts := models.RequestOptions{
 		URL:         pageURL,
 		Mode:        scraperMode,
@@ -138,43 +146,31 @@ func runMedia(cmd *cobra.Command, args []string) error {
 		WaitSeconds: mediaWaitSeconds,
 	}
 
-	log.Debug().Str("scraper", scraper.Name()).Msg("Fetching page")
 	pageData, err := scraper.Fetch(opts)
+	spinner.Stop()
+
 	if err != nil {
+		if strings.Contains(err.Error(), "executable file not found") {
+			return ui.NewHintedError(err, "Google Chrome is required for SPA mode. Install Chrome or use --mode=static.")
+		}
 		return fmt.Errorf("failed to fetch page: %w", err)
 	}
 
-	log.Debug().
-		Int("status", pageData.StatusCode).
-		Int64("response_time_ms", pageData.ResponseTime).
-		Msg("Page fetched successfully")
-
 	// Extract media URLs from the HTML
-	log.Debug().Msg("Extracting media URLs")
 	mediaURLs, err := downloader.ExtractMedia(pageData.HTML, pageURL, mediaTypeEnum)
 	if err != nil {
 		return fmt.Errorf("failed to extract media: %w", err)
 	}
 
 	if len(mediaURLs) == 0 {
-		log.Debug().Msg("No media files found on this page")
-		fmt.Println("\n" + ui.Info("❌ No media files found."))
-		fmt.Println("\n" + ui.Info("💡 TIP: Try using --mode=spa for JavaScript-heavy sites"))
+		fmt.Println(ui.StyledError("No media files found."))
+		fmt.Println(ui.StyledHint("Try using --mode=spa for JavaScript-heavy sites"))
 		return nil
 	}
 
-	log.Debug().Int("count", len(mediaURLs)).Msg("Media URLs extracted")
-	// Only show detailed file preview when verbose or JSON logging is enabled.
-	if verbose || jsonOutput {
-		fmt.Printf("\n%s %s\n", ui.Bold("Found"), ui.ColorWhite+fmt.Sprintf("%d media file(s):", len(mediaURLs))+ui.ColorReset)
-		for i, url := range mediaURLs {
-			fmt.Printf("  %s %d. %s\n", ui.ColorDim, i+1, ui.ColorWhite+url+ui.ColorReset)
-		}
-		fmt.Println()
-	} else {
-		// Minimal output: only show the count so the progress bar remains the primary output.
-		fmt.Printf("\n%s %s\n\n", ui.Bold("Found"), ui.ColorWhite+fmt.Sprintf("%d media file(s).", len(mediaURLs))+ui.ColorReset)
-	}
+	fmt.Println(ui.Heading("Media Discovery"))
+	fmt.Printf("  %s %s\n", ui.Bold("Found"), fmt.Sprintf("%d media file(s).", len(mediaURLs)))
+	fmt.Println()
 
 	// Create output directory
 	absOutputDir, err := filepath.Abs(outputDir)
@@ -186,7 +182,9 @@ func runMedia(cmd *cobra.Command, args []string) error {
 	pool := downloader.NewWorkerPool(concurrency, 60*time.Second, "Crawl/1.0")
 
 	// Start downloads
-	fmt.Printf("%s %s\n\n", ui.Info("Starting download with"), ui.ColorWhite+fmt.Sprintf("%d workers...", concurrency)+ui.ColorReset)
+	fmt.Println(ui.Heading("Downloading"))
+	fmt.Printf("  %s %s\n", ui.Bold("Using"), fmt.Sprintf("%d concurrent workers", concurrency))
+	fmt.Println()
 	ctx := context.Background()
 
 	downloadOpts := downloader.DownloadOptions{
@@ -194,7 +192,7 @@ func runMedia(cmd *cobra.Command, args []string) error {
 		Headers:   headerMap,
 	}
 
-	// Reduce console logging during the download phase so the progress bar remains the primary output.
+	// Reduce console logging during the download phase
 	prevLevel := zerolog.GlobalLevel()
 	if !verbose && !jsonOutput {
 		zerolog.SetGlobalLevel(zerolog.ErrorLevel)
@@ -209,72 +207,37 @@ func runMedia(cmd *cobra.Command, args []string) error {
 	totalSize := int64(0)
 	totalDuration := time.Duration(0)
 
-	// Only show detailed results header if verbose or JSON output is enabled.
-	if verbose || jsonOutput {
-		fmt.Println("\n" + ui.Bold("Download Results:"))
-	}
-
-	for i, result := range results {
+	for _, result := range results {
 		if result.Success {
 			successCount++
 			totalSize += result.Size
 			totalDuration += result.Duration
-			if verbose || jsonOutput {
-				fmt.Printf("%s [%d/%d] %s\n", ui.Success("✓"), i+1, len(results), ui.ColorWhite+filepath.Base(result.FilePath)+ui.ColorReset)
-				fmt.Printf("  %s %s  %s %v\n", ui.ColorDim+"Size:", ui.ColorWhite+formatBytes(result.Size)+ui.ColorReset, ui.ColorDim+"Duration:", result.Duration.Round(time.Millisecond))
-			}
 		} else {
 			failCount++
-			if verbose || jsonOutput {
-				fmt.Printf("%s [%d/%d] %s\n", ui.Error("✗"), i+1, len(results), ui.ColorWhite+result.URL+ui.ColorReset)
-				fmt.Printf("  %s %s\n", ui.ColorDim+"Error:", ui.Error(fmt.Sprintf("%v", result.Error)))
-			}
 		}
 	}
 
-	// Compute average duration (0 if no successes) and print the summary via helper
+	// Compute average duration
 	avgDuration := time.Duration(0)
 	if successCount > 0 {
 		avgDuration = totalDuration / time.Duration(successCount)
 	}
-	printSummary(verbose || jsonOutput, len(results), successCount, failCount, totalSize, avgDuration, absOutputDir)
+
+	fmt.Println()
+	fmt.Println(ui.Heading("Summary"))
+	fmt.Printf("  %s %s\n", ui.Bold("Total    :"), fmt.Sprintf("%d files", len(results)))
+	fmt.Printf("  %s %s\n", ui.Bold("Success  :"), ui.Success(fmt.Sprintf("%d", successCount)))
+	fmt.Printf("  %s %s\n", ui.Bold("Failed   :"), ui.Error(fmt.Sprintf("%d", failCount)))
+	fmt.Printf("  %s %s\n", ui.Bold("Size     :"), ui.FormatBytes(totalSize))
+	if successCount > 0 {
+		fmt.Printf("  %s %s\n", ui.Bold("Avg Time :"), avgDuration.Round(time.Millisecond).String())
+	}
+	fmt.Printf("  %s %s\n", ui.Bold("Output   :"), absOutputDir)
 
 	if failCount > 0 {
-		// Avoid printing usage/help when downloads had partial failures; the summary already provides details.
 		cmd.SilenceUsage = true
 		return fmt.Errorf("%d download(s) failed", failCount)
 	}
 
 	return nil
-}
-
-// printSummary prints a concise or detailed summary depending on the 'detailed' flag.
-func printSummary(detailed bool, total, success, failed int, totalSize int64, avg time.Duration, outDir string) {
-	// For non-detailed output ensure a leading blank line so it doesn't attach to the progress bar
-	if !detailed {
-		fmt.Println()
-	}
-	fmt.Printf("\n%s\n", ui.Bold("Summary:"))
-	fmt.Printf("  %s %s\n", ui.ColorBold+"Total:"+ui.ColorReset, ui.ColorWhite+fmt.Sprintf("%d files", total)+ui.ColorReset)
-	fmt.Printf("  %s %s\n", ui.ColorBold+"Success:"+ui.ColorReset, ui.Success(fmt.Sprintf("%d", success)))
-	fmt.Printf("  %s %s\n", ui.ColorBold+"Failed:"+ui.ColorReset, ui.Error(fmt.Sprintf("%d", failed)))
-	fmt.Printf("  %s %s\n", ui.ColorBold+"Total Size:"+ui.ColorReset, ui.ColorWhite+formatBytes(totalSize)+ui.ColorReset)
-	if success > 0 {
-		fmt.Printf("  %s %s\n", ui.ColorBold+"Average Time:"+ui.ColorReset, ui.ColorWhite+avg.Round(time.Millisecond).String()+ui.ColorReset)
-	}
-	fmt.Printf("  %s %s\n", ui.ColorBold+"Output Directory:"+ui.ColorReset, ui.ColorWhite+outDir+ui.ColorReset)
-}
-
-// formatBytes formats byte count as human-readable string
-func formatBytes(bytes int64) string {
-	const unit = 1024
-	if bytes < unit {
-		return fmt.Sprintf("%d B", bytes)
-	}
-	div, exp := int64(unit), 0
-	for n := bytes / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
